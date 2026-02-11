@@ -3,9 +3,9 @@ from flask_cors import CORS
 from backend.models import db, User, Song
 from backend.player import MusicPlayer 
 from backend.spotify_control import SpotifyController
-import os , sys
+import os, sys
 import threading
-from backend.gesture_control import detect_from_image
+from backend.gesture_control import detect_from_image, start_gesture, stop_gesture
 from backend.voice_control import start_voice, stop_voice
 import pygame
 
@@ -14,15 +14,15 @@ BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 DB_PATH = os.path.join(BASE_DIR, "database.db")
 FRONTEND_BUILD = os.path.join(BASE_DIR, "..", "frontend", "build")
 
-app = Flask(__name__,static_folder=os.path.join(FRONTEND_BUILD, "static"),
-    template_folder=FRONTEND_BUILD)
+app = Flask(__name__,
+            static_folder=os.path.join(FRONTEND_BUILD, "static"),
+            template_folder=FRONTEND_BUILD)
 CORS(app)
 
 app.config["SQLALCHEMY_DATABASE_URI"] = f"sqlite:///{DB_PATH}"
 app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
 
 db.init_app(app)
-
 with app.app_context():
     db.create_all()
 
@@ -30,7 +30,6 @@ with app.app_context():
 MUSIC_FOLDER = os.path.join(BASE_DIR, "music")
 os.makedirs(MUSIC_FOLDER, exist_ok=True)
 
-# Load local songs
 local_songs = [
     os.path.join(MUSIC_FOLDER, f)
     for f in os.listdir(MUSIC_FOLDER)
@@ -38,11 +37,21 @@ local_songs = [
 ]
 
 # ---------------- SPOTIFY ----------------
-spotify_ctrl = SpotifyController(
-    client_id="YOUR_CLIENT_ID",
-    client_secret="YOUR_CLIENT_SECRET",
-    redirect_uri="YOUR_REDIRECT_URI"
-)
+SPOTIFY_CLIENT_ID = os.getenv("SPOTIFY_CLIENT_ID", "")
+SPOTIFY_CLIENT_SECRET = os.getenv("SPOTIFY_CLIENT_SECRET", "")
+SPOTIFY_REDIRECT_URI = os.getenv("SPOTIFY_REDIRECT_URI", "")
+
+if SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET and SPOTIFY_REDIRECT_URI:
+    spotify_ctrl = SpotifyController(
+        client_id=SPOTIFY_CLIENT_ID,
+        client_secret=SPOTIFY_CLIENT_SECRET,
+        redirect_uri=SPOTIFY_REDIRECT_URI
+    )
+    SPOTIFY_ENABLED = True
+else:
+    print("⚠️ Spotify disabled (keys not provided)")
+    spotify_ctrl = None
+    SPOTIFY_ENABLED = False
 
 # ---------------- PLAYER ----------------
 player = MusicPlayer(
@@ -51,8 +60,8 @@ player = MusicPlayer(
 )
 
 player_state = {
-    "mode": "local",        # local / spotify
-    "status": "stopped",    # playing / paused
+    "mode": "local",
+    "status": "stopped",
     "song": "",
     "volume": 50,
     "liked": None,
@@ -62,7 +71,6 @@ player_state = {
 
 gesture_thread = None
 voice_thread = None
-
 gesture_running = False
 voice_running = False
 
@@ -74,7 +82,6 @@ def serve_react(path):
         return send_from_directory(app.static_folder, path)
     return send_from_directory(app.template_folder, "index.html")
 
-# Route to serve individual songs
 @app.route("/songs/<path:filename>")
 def serve_song(filename):
     return send_from_directory(MUSIC_FOLDER, filename)
@@ -103,7 +110,6 @@ def signup():
     
     return jsonify({"message": "Signup successful"}), 201
 
-
 @app.route("/api/login", methods=["POST"])
 def login():
     data = request.get_json()
@@ -126,25 +132,17 @@ def logout():
 
 @app.route("/api/current_index", methods=["GET"])
 def current_index():
-    return jsonify({
-        "index": player.current_index
-    })
+    return jsonify({"index": player.current_index})
 
 @app.route("/api/state", methods=["GET"])
 def get_state():
     return jsonify({
         "mode": player_state["mode"],
         "status": player_state["status"],
-
-        # 🔥 MAIN FIX FOR HIGHLIGHT
         "current_index": player.current_index if hasattr(player, "current_index") else 0,
-
-        # voice + gesture
         "voice": voice_status.get("active", False),
         "gesture": False
     })
-
-
 
 # ---------------- LOCAL PLAYER CONTROLS ----------------
 @app.route("/api/play", methods=["POST"])
@@ -159,72 +157,27 @@ def play_by_name():
     data = request.get_json()
     name = data.get("name", "").lower().strip()
 
-    # ----- SPECIAL COMMANDS -----
-    if name == "last song":
-        player.current_index = len(local_songs) - 1
-        player.play()
-        return jsonify({"message": "playing last song"})
+    # search local songs
+    for idx, file_path in enumerate(local_songs):
+        if name in os.path.basename(file_path).lower():
+            player.current_index = idx
+            player.play()
+            player_state["status"] = "playing"
+            player_state["mode"] = "local"
+            return jsonify({"message": f"Playing {os.path.basename(file_path)}", "index": idx}), 200
 
-    if name == "first song":
-        player.current_index = 0
-        player.play()
-        return jsonify({"message": "playing first song"})
-
-    if name == "random song":
-        import random
-        player.current_index = random.randint(0, len(local_songs)-1)
-        player.play()
-        return jsonify({"message": "playing random song"})
-    # ----- FUZZY + HALF MATCH -----
-    best_index = None
-
-    for i, song in enumerate(local_songs):
-        base = os.path.basename(song).lower()
-
-        clean = base.replace(".mp3","").replace("_"," ").replace("-"," ")
-        # exact / partial match
-        if name in clean:
-            best_index = i
-            break
-
-        # fuzzy replace
-        if name.replace("a","aa") in clean or name.replace("aa","a") in clean:
-            best_index = i
-            break
-    if best_index is not None:
-        player.current_index = best_index
-        player.play()
-
-        return jsonify({
-            "message": "playing",
-            "index": best_index,
-            "song": os.path.basename(local_songs[best_index])
-        })
-    return jsonify({"error": "song not found"}), 404
-
+    return jsonify({"error": "Song not found"}), 404
 @app.route("/api/play_index", methods=["POST"])
 def play_index():
     data = request.get_json()
     index = int(data.get("index"))
-
-    # ✅ Sahi list use karo
     if index < 0 or index >= len(local_songs):
         return jsonify({"error": "invalid index"})
-
-    # ✅ MusicPlayer ka index set
     player.current_index = index
-
-    # ✅ Existing player ka play function use karo
     player.play()
-
     player_state["status"] = "playing"
     player_state["mode"] = "local"
-
-    return jsonify({
-        "msg": "playing",
-        "index": index,
-        "song": os.path.basename(local_songs[index])
-    })
+    return jsonify({"msg": "playing", "index": index, "song": os.path.basename(local_songs[index])})
 
 @app.route("/api/pause", methods=["POST"])
 def pause():
@@ -236,27 +189,16 @@ def pause():
 @app.route("/api/next", methods=["POST"])
 def next_song():
     player.next_song()
-
     player_state["status"] = "playing"
     player_state["mode"] = "local"
-
-    return jsonify({
-        "message": "Next song",
-        "current_index": player.current_index
-    }), 200
+    return jsonify({"message": "Next song", "current_index": player.current_index}), 200
 
 @app.route("/api/prev", methods=["POST"])
 def prev_song():
     player.prev_song()
-
     player_state["status"] = "playing"
     player_state["mode"] = "local"
-
-    return jsonify({
-        "message": "Previous song",
-        "current_index": player.current_index
-    }), 200
-
+    return jsonify({"message": "Previous song", "current_index": player.current_index}), 200
 
 @app.route("/api/volume_up", methods=["POST"])
 def volume_up():
@@ -287,63 +229,59 @@ def dislike():
     return jsonify({"message": "Disliked"}), 200
 
 # ---------------- SPOTIFY CONTROLS ----------------
-@app.route("/api/spotify/login")
-def spotify_login():
-    auth_url = spotify_ctrl.oauth.get_authorize_url()
-    return redirect(auth_url)
+if SPOTIFY_ENABLED:
+    @app.route("/api/spotify/login")
+    def spotify_login():
+        auth_url = spotify_ctrl.oauth.get_authorize_url()
+        return redirect(auth_url)
 
+    @app.route("/api/spotify/callback")
+    def spotify_callback():
+        code = request.args.get("code")
+        token_info = spotify_ctrl.oauth.get_access_token(code)
+        spotify_ctrl.set_token(token_info)
+        return redirect("/")
 
-@app.route("/api/spotify/callback")
-def spotify_callback():
-    code = request.args.get("code")
-    token_info = spotify_ctrl.oauth.get_access_token(code)
-    spotify_ctrl.set_token(token_info)
+    @app.route("/api/spotify/play", methods=["POST"])
+    def spotify_play():
+        if not spotify_ctrl.is_ready():
+            return jsonify({"error": "Spotify not logged in"}), 401
+        player.play_spotify()
+        player_state["status"] = "playing"
+        player_state["mode"] = "spotify"
+        return jsonify({"message": "Spotify playing"}), 200
 
-    return redirect("http://localhost:3000")
+    @app.route("/api/spotify/stop", methods=["POST"])
+    def spotify_stop():
+        if not spotify_ctrl.is_ready():
+            return jsonify({"error": "Spotify not logged in"}), 401
+        player.stop_spotify()
+        player_state["status"] = "paused"
+        player_state["mode"] = "spotify"
+        return jsonify({"message": "Spotify stopped"}), 200
 
-@app.route("/api/spotify/play", methods=["POST"])
-def spotify_play():
-    if not spotify_ctrl.is_ready():
-        return jsonify({"error": "Spotify not logged in"}), 401
-    player.play_spotify()
-    player_state["status"] = "playing"
-    player_state["mode"] = "spotify"
-    return jsonify({"message": "Spotify playing"}), 200
+    @app.route("/api/spotify/next", methods=["POST"])
+    def spotify_next():
+        if not spotify_ctrl.is_ready():
+            return jsonify({"error": "Spotify not logged in"}), 401
+        player.next_spotify()
+        player_state["status"] = "next song"
+        player_state["mode"] = "spotify"
+        return jsonify({"message": "Spotify next"}), 200
 
+    @app.route("/api/spotify/prev", methods=["POST"])
+    def spotify_prev():
+        if not spotify_ctrl.is_ready():
+            return jsonify({"error": "Spotify not logged in"}), 401
+        player.prev_spotify()
+        player_state["status"] = "previous song"
+        player_state["mode"] = "spotify"
+        return jsonify({"message": "Spotify previous"}), 200
 
-@app.route("/api/spotify/stop", methods=["POST"])
-def spotify_stop():
-    if not spotify_ctrl.is_ready():
-        return jsonify({"error": "Spotify not logged in"}), 401
-    player.stop_spotify()
-    player_state["status"] = "paused"
-    player_state["mode"] = "spotify"
-    return jsonify({"message": "Spotify stopped"}), 200
-
-@app.route("/api/spotify/next", methods=["POST"])
-def spotify_next():
-    if not spotify_ctrl.is_ready():
-        return jsonify({"error": "Spotify not logged in"}), 401
-    player.next_spotify()
-    player_state["status"] = "next song"
-    player_state["mode"] = "spotify"
-    return jsonify({"message": "Spotify next"}), 200
-
-@app.route("/api/spotify/prev", methods=["POST"])
-def spotify_prev():
-    if not spotify_ctrl.is_ready():
-        return jsonify({"error": "Spotify not logged in"}), 401
-    player.prev_spotify()
-    player_state["status"] = "previous song"
-    player_state["mode"] = "spotify"
-    return jsonify({"message": "Spotify previous"}), 200
-
-
-# gesture and voice api routes
+# ---------------- GESTURE + VOICE ----------------
 @app.route("/api/gesture/start", methods=["POST"])
 def gesture_start_route():
-    start_gesture_thread = threading.Thread(target=start_gesture, daemon=True)
-    start_gesture_thread.start()
+    threading.Thread(target=start_gesture, daemon=True).start()
     return "", 200
 
 @app.route("/api/gesture/stop", methods=["POST"])
@@ -359,12 +297,14 @@ def web_gesture():
     np_arr = np.frombuffer(img_data, np.uint8)
     frame = cv2.imdecode(np_arr, cv2.IMREAD_COLOR)
     action = detect_from_image(frame)
-
     if action == "play": player.play()
     elif action == "pause": player.pause()
     elif action == "next": player.next_song()
     elif action == "prev": player.prev_song()
-
+    elif action == "volume_up": player.volume_up()
+    elif action == "volume_down": player.volume_down()
+    elif action == "like":player.like()
+    elif action == "dislike":player.dislike()
     return jsonify({"action": action})
 
 @app.route("/api/voice_text", methods=["POST"])
@@ -377,8 +317,6 @@ def voice_text():
     elif "volume up" in text: player.volume_up()
     elif "volume down" in text: player.volume_down()
     return {"ok": True}
-
-
 
 voice_status = {"active":False}
 @app.route("/api/voice/start", methods=["POST"])
@@ -412,7 +350,6 @@ def get_voice_status():
 def shutdown():
     os._exit(0)
     return "ok"
-
 
 # ---------------- RUN ----------------
 if __name__ == "__main__":
