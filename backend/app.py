@@ -5,9 +5,8 @@ from backend.player import MusicPlayer
 from backend.spotify_control import SpotifyController
 import os, sys
 import threading
-from backend.gesture_control import detect_from_image, start_gesture, stop_gesture
-from backend.voice_control import start_voice, stop_voice
-import pygame
+ start_voice, stop_voice
+
 
 # ---------------- DATABASE ----------------
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -93,6 +92,19 @@ def get_local_songs():
     songs = [f for f in files if f.endswith(".mp3") or f.endswith(".wav")]
     return jsonify({"songs": songs})
 
+@app.route("/api/current_song")
+def current_song():
+    if not player.local_songs:
+        return {"song": None}
+
+    return {
+        "song": os.path.basename(player.local_songs[player.current_index]),
+        "url": f"/songs/{os.path.basename(player.local_songs[player.current_index])}",
+        "volume": player.volume,
+        "is_playing": player.is_playing
+    }
+
+
 # ---------------- AUTH ----------------
 @app.route("/api/signup", methods=["POST"])
 def signup():
@@ -136,12 +148,18 @@ def current_index():
 
 @app.route("/api/state", methods=["GET"])
 def get_state():
+    current_song = ""
+    if player.local_songs:
+        current_song = os.path.basename(player.local_songs[player.current_index])
+
     return jsonify({
         "mode": player_state["mode"],
         "status": player_state["status"],
-        "current_index": player.current_index if hasattr(player, "current_index") else 0,
+        "current_index": player.current_index,
+        "song": current_song,
+        "volume": player.volume,
         "voice": voice_status.get("active", False),
-        "gesture": False
+        "gesture": True
     })
 
 # ---------------- LOCAL PLAYER CONTROLS ----------------
@@ -279,16 +297,6 @@ if SPOTIFY_ENABLED:
         return jsonify({"message": "Spotify previous"}), 200
 
 # ---------------- GESTURE + VOICE ----------------
-@app.route("/api/gesture/start", methods=["POST"])
-def gesture_start_route():
-    threading.Thread(target=start_gesture, daemon=True).start()
-    return "", 200
-
-@app.route("/api/gesture/stop", methods=["POST"])
-def gesture_stop_route():
-    stop_gesture()
-    return "", 200
-
 @app.route("/api/web_gesture", methods=["POST"])
 def web_gesture():
     import base64, cv2, numpy as np
@@ -319,18 +327,6 @@ def voice_text():
     return {"ok": True}
 
 voice_status = {"active":False}
-@app.route("/api/voice/start", methods=["POST"])
-def voice_start_route():
-    start_voice()
-    voice_status["active"] = True
-    return {"status":"voice started"}, 200
-
-@app.route("/api/voice/stop", methods=["POST"])
-def voice_stop_route():
-    stop_voice()
-    voice_status["active"] = False
-    return {"status":"voice stopped"}, 200
-
 @app.route("/api/voice_active", methods=["POST"])
 def voice_active():
     voice_status["active"] = True
@@ -354,3 +350,4 @@ def shutdown():
 # ---------------- RUN ----------------
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000, debug=True)
+
