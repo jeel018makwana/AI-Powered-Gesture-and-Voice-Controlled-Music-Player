@@ -102,6 +102,8 @@ def voice_loop():
     global listening, voice_enabled
 
     recognizer = sr.Recognizer()
+    recognizer.energy_threshold = 300
+    recognizer.dynamic_energy_threshold = True
     mic = sr.Microphone()
 
     print("🎤 Voice Control Active")
