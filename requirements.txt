@@ -1,8 +1,11 @@
 Flask
 Flask-Cors
-opencv-python-headless
+flask_sqlalchemy
+opencv-python
 mediapipe
 numpy
 gunicorn
 spotipy
 speechrecognition
+Pygame
+pyaudio
