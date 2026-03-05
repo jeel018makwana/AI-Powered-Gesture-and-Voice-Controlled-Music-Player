@@ -2,7 +2,6 @@ import React, { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import VoiceStatus from "./VoiceStatus";
 import VoiceHelp from "./VoiceHelp";
-import VoiceWake from "./VoiceWake";
 
 function Dashboard() {
   const [mode, setMode] = useState("local");
@@ -11,8 +10,7 @@ function Dashboard() {
   const [currentIndex, setCurrentIndex] = useState(0);
   const [backendState, setBackendState] = useState(null);
   const navigate = useNavigate();
-  const audioRef = React.useRef(null);
-  
+
   useEffect(() => {
     if (mode === "local") {
       fetch("/api/songs")
@@ -38,30 +36,6 @@ function Dashboard() {
 
   return () => clearInterval(interval);
   }, []);
-  useEffect(() => {
-    const interval = setInterval(() => {
-      fetch("/api/current_song")
-        .then(res => res.json())
-        .then(data => {
-          if (!data.song) return;
-  
-          if (audioRef.current.src !== window.location.origin + data.url) {
-            audioRef.current.src = data.url;
-          }
-  
-          audioRef.current.volume = data.volume / 100;
-  
-          if (data.is_playing) {
-            audioRef.current.play().catch(()=>{});
-          } else {
-            audioRef.current.pause();
-          }
-        });
-    }, 1000);
-  
-    return () => clearInterval(interval);
-  }, []);
-  
   const playSelectedSong = (index) => {
     fetch("/api/play_index", {
       method: "POST",
@@ -183,7 +157,6 @@ function Dashboard() {
 
       </div>
     )}
-    <VoiceWake/>
     <VoiceHelp/>
   </div>
   );
