@@ -1,4 +1,3 @@
-
 body {
   background: radial-gradient(circle, #0f2027, #203a43, #2c5364);
   color: white;
@@ -14,7 +13,7 @@ body {
   align-items: center !important;
   justify-content: center !important;
 
-  background: url("frontend\public\dashboard.jpeg") !important;
+  background: url('frontend\public\dashboard.jpeg') !important;
   background-size: cover !important;
   background-position: center !important;
 }
